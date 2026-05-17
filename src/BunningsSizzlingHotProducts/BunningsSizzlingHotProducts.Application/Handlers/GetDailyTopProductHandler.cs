@@ -17,16 +17,14 @@ public sealed class GetDailyTopProductHandler(
         GetDailyTopProductQuery query,
         CancellationToken cancellationToken)
     {
-        var completedTask = orderRepo.GetOrdersBetweenAsync(query.Date, query.Date, cancellationToken);
-        var cancellationsTask = orderRepo.GetCancellationsTargetingAsync(query.Date, query.Date, cancellationToken);
-        var productsTask = productRepo.GetAllAsync(cancellationToken);
+        var completed = await orderRepo.GetOrdersBetweenAsync(query.Date, query.Date, cancellationToken);
+        var cancellations = await orderRepo.GetCancellationsTargetingAsync(query.Date, query.Date, cancellationToken);
+        var products = await productRepo.GetAllAsync(cancellationToken);
 
-        await Task.WhenAll(completedTask, cancellationsTask, productsTask);
-
-        var allOrders = completedTask.Result.Concat(cancellationsTask.Result);
+        var allOrders = completed.Concat(cancellations);
         var reduced = _reducer.Reduce(allOrders);
         var counts = _counter.Count(reduced);
-        var topName = _selector.Select(counts, productsTask.Result);
+        var topName = _selector.Select(counts, products);
 
         return new TopProductResult(query.Date, query.Date, topName);
     }

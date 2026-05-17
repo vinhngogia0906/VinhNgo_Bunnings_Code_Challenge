@@ -19,63 +19,85 @@ public sealed class DatabaseSeeder(SizzlingHotProductsDbContext db)
 
         if (await db.Products.AnyAsync(ct)) return;
 
-        var products = JsonSerializer.Deserialize<SeedProduct[]>(
-            await File.ReadAllTextAsync(productsJsonPath, ct), JsonOpts) ?? [];
-        var seedOrders = JsonSerializer.Deserialize<SeedOrder[]>(
-            await File.ReadAllTextAsync(ordersJsonPath, ct), JsonOpts) ?? [];
+        var rawProducts = await File.ReadAllTextAsync(productsJsonPath, ct);
+        var products = ParseJsonTolerant<SeedProduct[]>(rawProducts, JsonOpts) ?? [];
+        var rawOrders = await File.ReadAllTextAsync(ordersJsonPath, ct);
+        var seedOrders = ParseJsonTolerant<SeedOrder[]>(rawOrders, JsonOpts) ?? [];
 
         db.Products.AddRange(products.Select(p => new ProductRow { Id = p.Id, Name = p.Name }));
 
-        // Two-pass: capture completed-order dates so we can populate OriginalOrderDate on cancellations.
-        var completedDates = seedOrders
-            .Where(o => string.Equals(o.Status, "completed", StringComparison.OrdinalIgnoreCase))
-            .ToDictionary(o => o.OrderId, o => ParseDate(o.Date));
-
-        foreach (var o in seedOrders)
+        // Pass 1 — one OrderRow per OrderId, populated from the completed seed record.
+        var ordersById = new Dictionary<string, OrderRow>(StringComparer.Ordinal);
+        foreach (var o in seedOrders.Where(o => NormaliseStatus(o) == "completed"))
         {
-            var date = ParseDate(o.Date);
-            var isCancelled = string.Equals(o.Status, "cancelled", StringComparison.OrdinalIgnoreCase);
+            if (ordersById.ContainsKey(o.OrderId))
+                throw new InvalidOperationException(
+                    $"Duplicate completed order in seed data: {o.OrderId}");
 
-            var row = new OrderRow
+            ordersById[o.OrderId] = new OrderRow
             {
                 OrderId = o.OrderId,
                 CustomerId = o.CustomerId,
-                Date = date,
-                Status = isCancelled ? "cancelled" : "completed",
-                OriginalOrderDate = isCancelled && completedDates.TryGetValue(o.OrderId, out var d) ? d : null,
+                Date = ParseDate(o.Date),
+                Status = "completed",
+                OriginalOrderDate = null,
                 Entries = (o.Entries ?? [])
                     .Select(e => new OrderEntryRow
                     {
                         OrderId = o.OrderId,
                         ProductId = e.Id,
-                        Quantity = e.Quantity
+                        Quantity = e.Quantity,
                     })
-                    .ToList()
+                    .ToList(),
             };
-
-            // For cancellation rows we still want the original entries — load them from the matching completed row.
-            if (isCancelled && row.Entries.Count == 0)
-            {
-                var matching = seedOrders.FirstOrDefault(
-                    x => x.OrderId == o.OrderId
-                      && string.Equals(x.Status, "completed", StringComparison.OrdinalIgnoreCase));
-                if (matching?.Entries is not null)
-                {
-                    row.Entries.AddRange(matching.Entries.Select(e => new OrderEntryRow
-                    {
-                        OrderId = o.OrderId,
-                        ProductId = e.Id,
-                        Quantity = e.Quantity
-                    }));
-                }
-            }
-
-            db.Orders.Add(row);
         }
 
+        // Pass 2 — cancellations mutate the existing row instead of inserting a new one.
+        foreach (var o in seedOrders.Where(o => NormaliseStatus(o) == "cancelled"))
+        {
+            if (!ordersById.TryGetValue(o.OrderId, out var row))
+                throw new InvalidOperationException(
+                    $"Cancellation references unknown order: {o.OrderId}");
+
+            row.OriginalOrderDate = row.Date;
+            row.Date = ParseDate(o.Date);
+            row.Status = "cancelled";
+        }
+
+        db.Orders.AddRange(ordersById.Values);
         await db.SaveChangesAsync(ct);
     }
 
     private static DateOnly ParseDate(string s) =>
         DateOnly.ParseExact(s, "dd/MM/yyyy", CultureInfo.InvariantCulture);
+
+    // Use this to clean dirty JSON inputs that have raw CR/LF line breaks inside string literals (a common artifact of line-wrapping in source files).
+    static T? ParseJsonTolerant<T>(string raw, JsonSerializerOptions opts)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<T>(raw, opts);
+        }
+        catch (JsonException)
+        {
+            // The provided inputs have raw CR/LF inserted inside string literals
+            // (a line-wrap artifact, not legitimate data). Strip both CR and LF
+            // so the fallback survives git's text=auto normalisation across
+            // platforms — Windows checkouts see \r\n inside strings; Linux/CI
+            // checkouts see bare \n after normalisation. Stripping either is
+            // safe: between JSON tokens they are optional whitespace; inside
+            // strings they are the corruption we are repairing.
+            var normalized = raw.Replace("\r", "").Replace("\n", "");
+            return JsonSerializer.Deserialize<T>(normalized, opts);
+        }
+    }
+
+    private static string NormaliseStatus(SeedOrder o) =>
+      o.Status?.Trim().ToLowerInvariant() switch
+      {
+          "completed" => "completed",
+          "cancelled" => "cancelled",
+          _ => throw new InvalidOperationException(
+              $"Unknown order status '{o.Status}' on order {o.OrderId}"),
+      };
 }
