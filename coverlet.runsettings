@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat Code Coverage">
+        <Configuration>
+          <Format>cobertura</Format>
+
+          <!--
+            Exclude:
+              - Test assemblies (they're 100% by definition; double-counting inflates the number).
+              - EF migrations (auto-generated, lots of lines, zero value to test).
+              - OpenAPI / source-generated code (not author-written).
+              - Program (covered transitively by integration tests; line coverage here is meaningless).
+              - The DbContext (declarations + fluent config — exercised via repository integration tests).
+          -->
+          <Exclude>
+            [*.Tests]*,
+            [*.IntegrationTests]*,
+            [*]*.Migrations.*,
+            [BunningsSizzlingHotProducts.Api]Program,
+            [BunningsSizzlingHotProducts.Api]Microsoft.AspNetCore.OpenApi.*,
+            [BunningsSizzlingHotProducts.Api]System.Runtime.CompilerServices.*,
+            [BunningsSizzlingHotProducts.Infrastructure]*.SizzlingHotProductsDbContext*
+          </Exclude>
+
+          <ExcludeByAttribute>
+            GeneratedCodeAttribute,
+            CompilerGeneratedAttribute,
+            ExcludeFromCodeCoverageAttribute
+          </ExcludeByAttribute>
+
+          <ExcludeByFile>
+            **/Migrations/*.cs,
+            **/*.Designer.cs,
+            **/*.g.cs
+          </ExcludeByFile>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>

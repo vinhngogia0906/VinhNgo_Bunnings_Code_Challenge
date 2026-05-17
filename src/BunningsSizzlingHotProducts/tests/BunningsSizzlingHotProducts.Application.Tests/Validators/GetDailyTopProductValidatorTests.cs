@@ -23,4 +23,18 @@ public class GetDailyTopProductValidatorTests
         var result = _v.TestValidate(new GetDailyTopProductQuery(new DateOnly(2026, 4, 23)));
         result.ShouldNotHaveAnyValidationErrors();
     }
+
+    [Fact]
+    public void Default_date_is_rejected()
+    {
+        var result = _v.TestValidate(new GetDailyTopProductQuery(default));
+        result.ShouldHaveValidationErrorFor(q => q.Date);
+    }
+
+    [Fact]
+    public void Past_date_is_accepted()
+    {
+        var result = _v.TestValidate(new GetDailyTopProductQuery(new DateOnly(2026, 4, 21)));
+        result.ShouldNotHaveAnyValidationErrors();
+    }
 }

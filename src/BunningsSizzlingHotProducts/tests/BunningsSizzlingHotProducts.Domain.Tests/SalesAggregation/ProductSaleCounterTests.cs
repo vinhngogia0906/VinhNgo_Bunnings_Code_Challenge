@@ -46,4 +46,60 @@ public class ProductSaleCounterTests
         counts.Should().ContainSingle()
             .Which.Sales.Should().Be(1);
     }
+
+    [Fact]
+    public void Empty_input_returns_empty()
+    {
+        var counts = new ProductSaleCounter().Count(Array.Empty<Order>());
+
+        counts.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Cancelled_orders_are_not_counted()
+    {
+        var orders = new[]
+        {
+            new Order("O10", "C1", new DateOnly(2026, 4, 21), OrderStatus.Cancelled,
+                [new OrderEntry("P1", 1)])
+        };
+
+        var counts = new ProductSaleCounter().Count(orders);
+
+        counts.Should().BeEmpty("cancellation rows must never contribute to counts");
+    }
+
+    [Fact]
+    public void Different_customers_same_product_same_day_count_as_separate_sales()
+    {
+        var orders = new[]
+        {
+            new Order("O10", "C1", new DateOnly(2026, 4, 21), OrderStatus.Completed,
+                [new OrderEntry("P1", 1)]),
+            new Order("O11", "C2", new DateOnly(2026, 4, 21), OrderStatus.Completed,
+                [new OrderEntry("P1", 1)])
+        };
+
+        var counts = new ProductSaleCounter().Count(orders);
+
+        counts.Should().ContainSingle()
+            .Which.Sales.Should().Be(2);
+    }
+
+    [Fact]
+    public void Same_customer_same_product_different_days_count_as_separate_sales()
+    {
+        var orders = new[]
+        {
+            new Order("O10", "C1", new DateOnly(2026, 4, 21), OrderStatus.Completed,
+                [new OrderEntry("P1", 1)]),
+            new Order("O11", "C1", new DateOnly(2026, 4, 22), OrderStatus.Completed,
+                [new OrderEntry("P1", 1)])
+        };
+
+        var counts = new ProductSaleCounter().Count(orders);
+
+        counts.Should().HaveCount(2);
+        counts.Should().AllSatisfy(c => c.Sales.Should().Be(1));
+    }
 }

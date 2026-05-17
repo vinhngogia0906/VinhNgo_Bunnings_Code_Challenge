@@ -26,7 +26,7 @@ jobs:
         run: dotnet build --no-restore --configuration Release
 
       - name: Test
-        run: dotnet test --no-build --configuration Release --logger "trx;LogFileName=test.trx" --collect:"XPlat Code Coverage" --results-directory TestResults
+        run: dotnet test --no-build --configuration Release --logger "trx;LogFileName=test.trx" --collect:"XPlat Code Coverage" --settings ../../coverlet.runsettings --results-directory TestResults
 
       - name: Install ReportGenerator
         run: dotnet tool install -g dotnet-reportgenerator-globaltool
