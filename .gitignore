@@ -1,0 +1,14 @@
+@'
+
+# Node
+node_modules/
+dist/
+.vite/
+playwright-report/
+test-results/
+
+# Editor
+.idea/
+.vs/
+*.user
+'@ | Add-Content .gitignore

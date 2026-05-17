@@ -1,0 +1,221 @@
+﻿[
+  {
+    "orderId": "O10",
+    "customerId":
+ "C1",
+    "entries": [
+      {
+        "id":
+ "P1",
+        "quantity": 1
+      }
+    ],
+ 
+   "date": "21/04/2026",
+    "status": "compl
+eted"
+  },
+  {
+    "orderId": "O20",
+    "cus
+tomerId": "C2",
+    "entries": [
+      {
+    
+    "id": "P1",
+        "quantity": 1
+      }
+
+    ],
+    "date": "21/04/2026",
+    "status
+": "completed"
+  },
+  {
+    "orderId": "O30",
+
+    "customerId": "C2",
+    "entries": [
+   
+   {
+        "id": "P2",
+        "quantity": 
+1
+      }
+    ],
+    "date": "21/04/2026",
+  
+  "status": "completed"
+  },
+  {
+    "orderId
+": "O31",
+    "customerId": "C3",
+    "entrie
+s": [
+      {
+        "id": "P2",
+        "qu
+antity": 1
+      },
+      {
+        "id": "P1
+",
+        "quantity": 2
+      }
+    ],
+    "
+date": "21/04/2026",
+    "status": "completed
+"
+  },
+  {
+    "orderId": "O32",
+    "custome
+rId": "C32",
+    "entries": [
+      {
+       
+ "id": "P2",
+        "quantity": 1
+      }
+  
+  ],
+    "date": "21/04/2026",
+    "status": 
+"completed"
+  },
+  {
+    "orderId": "O30",
+  
+  "customerId": "C2",
+    "date": "22/04/2026
+",
+    "status": "cancelled"
+  },
+  {
+    "or
+derId": "O40",
+    "customerId": "C3",
+    "e
+ntries": [
+      {
+        "id": "P4",
+      
+  "quantity": 2
+      }
+    ],
+    "date": "2
+2/04/2026",
+    "status": "completed"
+  },
+  
+{
+    "orderId": "O60",
+    "customerId": "C3
+",
+    "entries": [
+      {
+        "id": "P4
+",
+        "quantity": 2
+      },
+      {
+   
+     "id": "P1",
+        "quantity": 2
+      
+}
+    ],
+    "date": "22/04/2026",
+    "statu
+s": "completed"
+  },
+  {
+    "orderId": "O70"
+,
+    "customerId": "C4",
+    "entries": [
+  
+    {
+        "id": "P5",
+        "quantity":
+ 2
+      }
+    ],
+    "date": "22/04/2026",
+ 
+   "status": "completed"
+  },
+  {
+    "orderI
+d": "O80",
+    "customerId": "C5",
+    "entri
+es": [
+      {
+        "id": "P1",
+        "q
+uantity": 2
+      }
+    ],
+    "date": "22/04
+/2026",
+    "status": "completed"
+  },
+  {
+  
+  "orderId": "O81",
+    "customerId": "C5",
+ 
+   "entries": [
+      {
+        "id": "P1",
+ 
+       "quantity": 10
+      }
+    ],
+    "dat
+e": "22/04/2026",
+    "status": "completed"
+ 
+ },
+  {
+    "orderId": "O90",
+    "customerId
+": "C5",
+    "entries": [
+      {
+        "id
+": "P1",
+        "quantity": 1
+      }
+    ],
+
+    "date": "23/04/2026",
+    "status": "com
+pleted"
+  },
+  {
+    "orderId": "O100",
+    "
+customerId": "C3",
+    "entries": [
+      {
+ 
+       "id": "P4",
+        "quantity": 1
+    
+  },
+      {
+        "id": "P6",
+        "qua
+ntity": 3
+      }
+    ],
+    "date": "23/04/2
+026",
+    "status": "completed"
+  }
+]
+
