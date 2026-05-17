@@ -1,14 +1,49 @@
-@'
+# ---------- .NET ----------
+bin/
+obj/
+out/
+artifacts/
+*.user
+*.userosscache
+*.suo
+*.swp
+*.pdb
+*.dll.config
+project.lock.json
+project.fragment.lock.json
+[Dd]ebug/
+[Rr]elease/
+[Tt]est[Rr]esult*/
+.vs/
 
-# Node
+# ---------- Node / Frontend ----------
 node_modules/
 dist/
+build/
 .vite/
+.next/
+.turbo/
+.cache/
+coverage/
 playwright-report/
 test-results/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
-# Editor
+# ---------- Env ----------
+.env
+.env.local
+.env.*.local
+
+# ---------- Editor / OS ----------
 .idea/
-.vs/
-*.user
-'@ | Add-Content .gitignore
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.swo
+.DS_Store
+Thumbs.db
