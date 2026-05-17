@@ -1,0 +1,9 @@
+<Solution>
+  <Project Path="BunningsSizzlingHotProducts.Api/BunningsSizzlingHotProducts.Api.csproj" />
+  <Project Path="BunningsSizzlingHotProducts.Application/BunningsSizzlingHotProducts.Application.csproj" />
+  <Project Path="BunningsSizzlingHotProducts.Domain/BunningsSizzlingHotProducts.Domain.csproj" />
+  <Project Path="BunningsSizzlingHotProducts.Infrastructure/BunningsSizzlingHotProducts.Infrastructure.csproj" />
+  <Project Path="tests/BunningsSizzlingHotProducts.Api.IntegrationTests/BunningsSizzlingHotProducts.Api.IntegrationTests.csproj" />
+  <Project Path="tests/BunningsSizzlingHotProducts.Application.Tests/BunningsSizzlingHotProducts.Application.Tests.csproj" />
+  <Project Path="tests/BunningsSizzlingHotProducts.Domain.Tests/BunningsSizzlingHotProducts.Domain.Tests.csproj" />
+</Solution>
