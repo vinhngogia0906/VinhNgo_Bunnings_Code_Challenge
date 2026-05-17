@@ -81,8 +81,13 @@ public sealed class DatabaseSeeder(SizzlingHotProductsDbContext db)
         catch (JsonException)
         {
             // The provided inputs have raw CR/LF inserted inside string literals
-            // (a line-wrap artifact, not legitimate data). Strip them and retry.
-            var normalized = raw.Replace("\r\n", "").Replace("\r", "");
+            // (a line-wrap artifact, not legitimate data). Strip both CR and LF
+            // so the fallback survives git's text=auto normalisation across
+            // platforms — Windows checkouts see \r\n inside strings; Linux/CI
+            // checkouts see bare \n after normalisation. Stripping either is
+            // safe: between JSON tokens they are optional whitespace; inside
+            // strings they are the corruption we are repairing.
+            var normalized = raw.Replace("\r", "").Replace("\n", "");
             return JsonSerializer.Deserialize<T>(normalized, opts);
         }
     }
