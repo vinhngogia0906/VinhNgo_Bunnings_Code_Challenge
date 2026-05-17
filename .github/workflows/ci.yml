@@ -29,17 +29,17 @@ jobs:
         run: dotnet test --no-build --configuration Release --logger "trx;LogFileName=test.trx" --collect:"XPlat Code Coverage" --results-directory TestResults
 
       - name: Install ReportGenerator
-          run: dotnet tool install -g dotnet-reportgenerator-globaltool
+        run: dotnet tool install -g dotnet-reportgenerator-globaltool
       
       - name: Generate coverage report
-          run: |
-            reportgenerator \
-              -reports:"./TestResults/**/coverage.cobertura.xml" \
-              -targetdir:"./TestResults/CoverageReport" \
-              -reporttypes:"HtmlInline;MarkdownSummaryGithub;Cobertura"
+        run: |
+          reportgenerator \
+            -reports:"./TestResults/**/coverage.cobertura.xml" \
+            -targetdir:"./TestResults/CoverageReport" \
+            -reporttypes:"HtmlInline;MarkdownSummaryGithub;Cobertura"
 
       - name: Add coverage to job summary
-          run: cat ./TestResults/CoverageReport/SummaryGithub.md >> $GITHUB_STEP_SUMMARY
+        run: cat ./TestResults/CoverageReport/SummaryGithub.md >> $GITHUB_STEP_SUMMARY
 
       - name: Upload test results
         if: always()
