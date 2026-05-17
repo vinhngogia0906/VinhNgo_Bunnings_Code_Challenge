@@ -17,7 +17,10 @@ public static class DependencyInjection
         var conn = configuration.GetConnectionString("Postgres")
                    ?? throw new InvalidOperationException("Missing ConnectionStrings:Postgres");
 
-        services.AddDbContext<SizzlingHotProductsDbContext>(opt => opt.UseNpgsql(conn));
+        services.AddDbContextFactory<SizzlingHotProductsDbContext>(opt => opt.UseNpgsql(conn));
+        services.AddScoped<SizzlingHotProductsDbContext>(sp =>
+            sp.GetRequiredService<IDbContextFactory<SizzlingHotProductsDbContext>>()
+        .CreateDbContext());
         services.AddScoped<IOrderRepository, OrderRepository>();
         services.AddScoped<IProductRepository, ProductRepository>();
         services.AddSingleton<IClock, SystemClock>();

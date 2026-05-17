@@ -23,7 +23,7 @@ var app = builder.Build();
 var inputsDir = app.Configuration.GetValue<string>("Seeding:InputsPath")
                   ?? Path.Combine(app.Environment.ContentRootPath, "inputs");
 // Configure the HTTP request pipeline.
-if (!app.Environment.IsDevelopment())
+if (!app.Environment.IsEnvironment("Testing"))
 {
     using var scope = app.Services.CreateScope();
     var seeder = scope.ServiceProvider.GetRequiredService<DatabaseSeeder>();

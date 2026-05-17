@@ -9,7 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.7" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.8" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.8">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
@@ -20,6 +20,13 @@
   <ItemGroup>
     <ProjectReference Include="..\BunningsSizzlingHotProducts.Application\BunningsSizzlingHotProducts.Application.csproj" />
     <ProjectReference Include="..\BunningsSizzlingHotProducts.Infrastructure\BunningsSizzlingHotProducts.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+	<None Include="..\..\..\inputs\*.json">
+	    <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		<Link>inputs/%(Filename)%(Extension)</Link>
+	</None>
   </ItemGroup>
 
 </Project>

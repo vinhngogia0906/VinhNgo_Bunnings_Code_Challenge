@@ -7,13 +7,14 @@ using Microsoft.EntityFrameworkCore;
 
 namespace BunningsSizzlingHotProducts.Infrastructure.Repositories;
 
-public sealed class OrderRepository(SizzlingHotProductsDbContext db) : IOrderRepository
+public sealed class OrderRepository(IDbContextFactory<SizzlingHotProductsDbContext> factory) : IOrderRepository
 {
     public async Task<IReadOnlyList<Order>> GetOrdersBetweenAsync(
         DateOnly fromInclusive,
         DateOnly toInclusive,
         CancellationToken cancellationToken)
     {
+        await using var db = await factory.CreateDbContextAsync(cancellationToken);
         var rows = await db.Orders
             .Include(o => o.Entries)
             .AsNoTracking()
@@ -29,6 +30,7 @@ public sealed class OrderRepository(SizzlingHotProductsDbContext db) : IOrderRep
         DateOnly toInclusive,
         CancellationToken cancellationToken)
     {
+        await using var db = await factory.CreateDbContextAsync(cancellationToken);
         var rows = await db.Orders
             .AsNoTracking()
             .Where(o => o.Status == "cancelled")
