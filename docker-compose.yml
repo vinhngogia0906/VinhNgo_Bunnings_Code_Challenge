@@ -1,0 +1,32 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: sizzling
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sizzling"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: src/BunningsSizzlingHotProducts/BunningsSizzlingHotProducts.Api/Dockerfile
+    environment:
+      ConnectionStrings__Postgres: "Host=db;Port=5432;Database=sizzling;Username=postgres;Password=postgres"
+      ASPNETCORE_ENVIRONMENT: Production
+    volumes:
+      - ./inputs:/app/inputs:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8080"
+
+volumes:
+  pgdata:
