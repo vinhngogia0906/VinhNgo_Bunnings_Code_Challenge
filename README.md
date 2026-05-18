@@ -6,373 +6,111 @@ Welcome to my attempt at the Bunnings coding challenge, written by [Vinh Ngo](ht
 
 > Submission for the Bunnings "Sizzling Hot Products" Coding Challenge — a
 > CQRS-flavoured .NET 10 service that ranks products by net daily and rolling
-> sales over a Postgres-backed dataset, exposed as a REST API and seeded from
-> the supplied JSON inputs.
+> sales over a Postgres-backed dataset, paired with a React + Vite SPA that
+> consumes the API contract-first. Designed to be runnable in **one command**.
 
 ## Contents
 
-- [What's implemented](#whats-implemented)
+- [Design choices and justifications](#design-choices-and-justifications)
+- [Architecture at a glance](#architecture-at-a-glance)
 - [Quick start](#quick-start)
-- [Step-by-step verification](#step-by-step-verification)
-- [Architecture](#architecture)
-- [Assumptions and trade-offs](#assumptions-and-trade-offs)
-- [How I'd extend this](#how-id-extend-this)
-- [Tests](#tests)
+- [What to test (Postman walkthrough)](#what-to-test-postman-walkthrough)
+- [Frontend UI walkthrough](#frontend-ui-walkthrough)
+- [Tests + coverage](#tests--coverage)
 - [CI](#ci)
 - [Project layout](#project-layout)
+- [If I had more time](#if-i-had-more-time)
 - [Submission checklist](#submission-checklist)
 
 ---
 
-## What's implemented
+## Design choices and justifications
 
-The two operations from the spec, exposed as HTTP endpoints over a Postgres
-database that is auto-migrated and seeded from the supplied `inputs/*.json`
-on startup:
+The brief leaves several edges unspecified. Each was resolved as follows.
 
-| Spec operation                     | HTTP endpoint |
-|------------------------------------|---------------|
-| Top product for a given day        | `GET /api/top-product/daily?date=YYYY-MM-DD`     |
-| Top product over a rolling window  | `GET /api/top-product/rolling?days=N`            |
+### 1. Cancellation semantics — mutate, don't duplicate
 
-Plus:
+A cancellation has the same `OrderId` as a prior completed order but a later `Date`. The seeder maps both rows into a **single** `OrderRow`:
 
-- **Cancellation netting.** Cancellations that arrive on a later day but
-  reference an earlier order date are subtracted from the correct day's
-  totals (Step 5 below proves this against the spec's worked example).
-- **Deterministic tie-breaking.** Two products with the same total are
-  broken by alphabetical product name using ordinal comparison — results
-  are reproducible on every machine regardless of locale.
-- **FluentValidation at the boundary** — invalid `date` / `days` values
-  return RFC 7807 `ProblemDetails` 400 responses.
-- **OpenAPI document** at `http://localhost:8080/openapi/v1.json`.
-- **Tolerant JSON seeding** — the supplied input files contain stray CR/LF
-  line wraps **inside** string literals (invalid JSON). The seeder
-  recovers narrowly; see [Assumptions](#assumptions-and-trade-offs).
+- `Status = "cancelled"`
+- `OriginalOrderDate = <original sale date>`
+- `Date = <cancellation date>`
 
----
+The reducer drops the order entirely; the cancellation does not itself count as a sale.
 
-## Quick start
+**Why not store cancellations as separate audit rows?** Two reasons. The schema's `OriginalOrderDate` field signalled this design from the start. And mutating-in-place keeps the aggregation SQL trivial — `WHERE Status = 'completed' AND Date BETWEEN @from AND @to` — instead of the `NOT EXISTS` correlated subquery a separate audit table would force. If I needed a real change-history, I'd add an audit log *alongside* this design, not replace it.
 
-### Option 1 — Docker Compose (recommended; zero local dependencies beyond Docker)
+### 2. Counting rule — unique customer-product-day tuples
 
-```powershell
-git clone https://github.com/vinhngogia0906/VinhNgo_Bunnings_Code_Challenge.git
-cd VinhNgo_Bunnings_Code_Challenge
+A given `(CustomerId, ProductId, Date)` tuple counts as **one sale**, regardless of quantity or how many orders the customer placed that day.
 
-docker compose up --build -d
-```
+**Why?** This matches the brief's "unique-customer-sale-per-day" wording. Pure quantity-based counting would have been a different product entirely; this is the interpretation I implemented, locked in by `ProductSaleCounterTests`.
 
-Wait ~20 seconds for the `backend` container to come up (Postgres has to be
-`healthy` first, then EF migrations + JSON seeding run on first start), then
-open:
+### 3. Tie-break — alphabetical ordinal
 
-| Surface     | URL |
-|-------------|-----|
-| **API root**   | http://localhost:8080 |
-| **OpenAPI**    | http://localhost:8080/openapi/v1.json |
-| **Daily**      | http://localhost:8080/api/top-product/daily?date=2026-04-21 |
-| **Rolling**    | http://localhost:8080/api/top-product/rolling?days=365 |
+When two products share a total, the alphabetically earlier name wins, compared via `StringComparer.Ordinal`.
 
-You should see this in Docker Desktop:
+**Why?** The brief doesn't specify, but determinism matters more than fairness here. Graders running on different locales should see identical answers; ordinal comparison sidesteps the classic Turkish-I problem and the like.
 
-![Step 0 — Docker containers running](screenshots/00-docker-containers-running.png)
+### 4. Tolerant JSON seeding — narrow, guarded fallback
 
-To stop:
+The supplied `inputs/*.json` files contain stray CR/LF sequences inserted **inside** string literals (a line-wrap artifact of the dataset, not the whitespace between tokens). Strict JSON does not permit unescaped control characters inside strings.
 
-```powershell
-docker compose down          # keep the Postgres volume (next run skips reseeding)
-docker compose down -v       # wipe the volume too (next run reseeds from scratch)
-```
+The seeder reads them through `SeedJsonReader`:
 
-### Option 2 — Run locally (faster iteration; needs .NET 10 SDK + Docker for Postgres)
+1. Strict parse attempt first.
+2. On a specific `JsonException` ("invalid within a JSON string"), strips stray `\r` / `\n` and retries once.
 
-```powershell
-# 1. start just the database
-docker compose up -d db
+**Why not pre-process the inputs on disk?** A reviewer might supply a fresh dirty file to verify the assignment; pre-processing on first run would silently fail that test. Doing the recovery in the seeder keeps the fallback narrow (guarded by a `when` clause so unrelated JSON errors still surface as themselves) and reproducible. **Assumption:** any CR/LF inside a string value is a wrap artifact, not legitimate data — true for this dataset (product names, IDs, dates).
 
-# 2. point the API at the host-local Postgres + the repo-root inputs folder (PowerShell)
-$env:ConnectionStrings__Postgres = "Host=localhost;Port=5432;Database=sizzling;Username=postgres;Password=postgres"
-$env:Seeding__InputsPath          = "$PWD\inputs"
+### 5. Persistence DTOs (`*Row`) separate from domain types
 
-# 3. run the API
-dotnet run --project src/BunningsSizzlingHotProducts/BunningsSizzlingHotProducts.Api
-```
+EF Core maps to flat row types in `Infrastructure/Persistence/Models/`; the repository assembles domain aggregates by hand.
 
-Kestrel prints the listening URL on startup (`Now listening on: http://localhost:5xxx`).
-Substitute that port everywhere `http://localhost:8080` appears below.
+**Why?** Keeps `Microsoft.EntityFrameworkCore` out of the domain layer entirely. The domain is pure C# with no I/O — easier to test, easier to swap (today: Postgres; tomorrow: Cosmos DB or a flat-file repo, with no domain change). A small amount of mapping code is the trade for that decoupling.
 
-### Option 3 — Run all tests
+### 6. Contract-first frontend via NSwag
 
-```powershell
-dotnet test src/BunningsSizzlingHotProducts/BunningsSizzlingHotProducts.slnx `
-    --collect:"XPlat Code Coverage" `
-    --settings coverlet.runsettings
-```
+The frontend's `lib/api-client.ts` is **generated** from the backend's OpenAPI document (`/openapi/v1.json`) via `npm run gen:api`. The page components import `Client` and `TopProductResponse` directly from that file.
 
-> **Note:** the integration test suite uses [Testcontainers](https://dotnet.testcontainers.org/)
-> to spin up its own ephemeral Postgres. **Docker Desktop must be running**,
-> but you do **not** need to start `docker compose up` first — the tests are
-> self-contained.
+**Why?** Single source of truth for the API surface. Any backend change that breaks the contract is caught at frontend build time, not at runtime. The trade-off — a regen step when the API changes — is documented in [Quick start](#quick-start).
+
+### 7. CQRS-flavoured pipeline
+
+Each query is handled by a `*Handler` that fetches data via repository interfaces, runs a synchronous functional pipeline (`OrderReducer` → `ProductSaleCounter` → `TopProductSelector`), and returns a strongly-typed `*Result`. Handlers do not contain business logic; they **orchestrate**.
+
+**Why?** Two endpoints today; if Bunnings ever wanted a third ("top product per customer"), I'd add one handler — the pipeline stages stay reused. The domain pipeline is also unit-testable without a database, which is exactly what `Domain.Tests` does (100% coverage, no I/O).
+
+### 8. Rolling window anchored to a clock abstraction
+
+The window ends at `IClock.Today`. For tests I inject a `FixedClock`; the production `SystemClock` returns `2026-04-23` per the brief.
+
+**Why hardcode "today"?** The seed data is dated 21–23 April 2026. Tying production behaviour to the host's wall clock would make the demo answer drift depending on when a grader runs it. Better to be explicit about the anchor. A real production rewrite would expose explicit `from`/`to` query params (see [If I had more time](#if-i-had-more-time)).
+
+### 9. Tradesman's-notebook frontend aesthetic
+
+The SPA uses a deliberate "trade ticket" visual language — warm cream paper, Fraunces display serif, Familjen Grotesk body, JetBrains Mono for all tabular data, a single hot-orange accent reserved exclusively for the result reveal, and a yellow safety-stripe rule under the header.
+
+
+### 10. Out-of-scope choices (explicit, not oversights)
+
+- **No auth / rate limiting / multi-tenancy** — out of scope for the brief.
+- **No advisory lock on seed run** — the seeder is idempotent (`if (await db.Products.AnyAsync(ct)) return;`) but races between replicas on a fresh DB. Not a problem with the single-replica compose setup.
+- **No `from`/`to` query params** on rolling — would have been a nice addition; not in the brief.
 
 ---
 
-## Step-by-step verification
-
-Below is the exact happy-path a reviewer can walk through. Every step lists the
-**curl command**, the **expected JSON response**, and the **expected screen state
-captured under `screenshots/`**. *If your output matches the JSON and your screen
-matches the screenshot, the step is correct.*
-
-> All steps assume Option 1 above is running (API on `:8080`).
-
----
-
-### Step 1 — Confirm the API is up
-
-```bash
-curl http://localhost:8080/openapi/v1.json
-```
-
-The OpenAPI document for the two endpoints is returned. In a browser:
-
-![Step 1 — OpenAPI document](screenshots/01-openapi-document.png)
-
-**What to look for:** a JSON document with two `paths` entries —
-`/api/top-product/daily` and `/api/top-product/rolling` — and the
-`TopProductResponse` schema.
-
----
-
-### Step 2 — Daily top product on `2026-04-21`
-
-```bash
-curl "http://localhost:8080/api/top-product/daily?date=2026-04-21"
-```
-
-Expected:
-
-```json
-{
-  "from": "2026-04-21",
-  "to": "2026-04-21",
-  "productName": "Ezy Storage 37L Flexi Laundry Basket - White"
-}
-```
-
-![Step 2 — Daily 2026-04-21](screenshots/02-daily-2026-04-21.png)
-
-**What to look for:** the response body matches exactly. On 21/04/2026 the
-laundry basket (`P1`) is bought by C1, C2, and C3 — three unique customers —
-winning the day. C2's `O30` order for the letterbox (`P2`) is cancelled the
-next day (Step 4 verifies this matters).
-
----
-
-### Step 3 — Daily top product on `2026-04-23` (tie-break case)
-
-```bash
-curl "http://localhost:8080/api/top-product/daily?date=2026-04-23"
-```
-
-Expected:
-
-```json
-{
-  "from": "2026-04-23",
-  "to": "2026-04-23",
-  "productName": "Arlec 160W Crystalline Solar Foldable Charging Kit"
-}
-```
-
-![Step 3 — Daily 2026-04-23](screenshots/03-daily-2026-04-23.png)
-
-**What to look for:** on 23/04/2026 the laundry basket (`P1`) and the solar
-charging kit (`P6`) each have **one** unique-customer sale. The selector
-breaks the tie using **alphabetical ordinal order** — `"Arlec…"` sorts
-before `"Ezy…"`, so the Arlec kit wins. This is deterministic across
-machines and locales.
-
----
-
-### Step 4 — Cancellation netting
-
-The seed data contains a cancellation: `O30` was placed on 21/04 for the
-letterbox (`P2`), then cancelled on 22/04. The system must net it out from
-the 21/04 totals.
-
-To prove this matters, ask for the day's top product and confirm `P2` did
-**not** win despite three completed orders mentioning it:
-
-```bash
-curl "http://localhost:8080/api/top-product/daily?date=2026-04-21"
-```
-
-The response is still **`Ezy Storage 37L Flexi Laundry Basket - White`** (from
-Step 2). Without the cancellation, `P2` would have had three unique-customer
-sales (C2, C3, C32) and tied with `P1` — and ordinal sort would put `"Aandleford…"`
-ahead of `"Ezy…"`, flipping the winner.
-
-![Step 4 — Cancellation netting verified](screenshots/04-cancellation-netting.png)
-
-**What to look for:** the laundry basket wins because `O30` (C2's letterbox
-purchase) was cancelled. The cancellation is recorded with `Date = 22/04` and
-`OriginalOrderDate = 21/04`, and the reducer subtracts it from the 21st.
-
----
-
-### Step 5 — Rolling top product for the past year
-
-```bash
-curl "http://localhost:8080/api/top-product/rolling?days=365"
-```
-
-Expected (the `from`/`to` dates will reflect today minus 364 / today):
-
-```json
-{
-  "from": "<today-364>",
-  "to":   "<today>",
-  "productName": "Ezy Storage 37L Flexi Laundry Basket - White"
-}
-```
-
-![Step 5 — Rolling 365](screenshots/05-rolling-365-days.png)
-
-**What to look for:** aggregating across the entire seed range
-(21/04–23/04), the laundry basket sums to **6** unique-customer sales —
-more than every other product combined. It wins the year.
-
-> Why `days=365` and not the default `days=3`? The rolling window is
-> anchored to the **host's today** (via `IClock`). The seed data is dated
-> April 2026, so a short window (e.g. 3 days) is empty unless you happen
-> to run this in late April 2026. `days=365` is wide enough to capture
-> the seed regardless of when the grader runs the demo.
-
----
-
-### Step 6 — Validation: future date is rejected
-
-```bash
-curl -i "http://localhost:8080/api/top-product/daily?date=2099-01-01"
-```
-
-Expected:
-
-```
-HTTP/1.1 400 Bad Request
-Content-Type: application/problem+json
-```
-
-```json
-{
-  "type": "https://tools.ietf.org/html/rfc9110#section-15.5.1",
-  "title": "One or more validation errors occurred.",
-  "status": 400,
-  "errors": {
-    "Date": ["Date cannot be in the future."]
-  }
-}
-```
-
-![Step 6 — Future date rejected](screenshots/06-validation-future-date.png)
-
-**What to look for:** a 400 with a standard RFC 7807 `ProblemDetails`
-body. The `errors.Date` array contains the FluentValidation message
-verbatim. No 500s, no silent successes.
-
----
-
-### Step 7 — Validation: invalid `days` is rejected
-
-```bash
-curl -i "http://localhost:8080/api/top-product/rolling?days=0"
-```
-
-Expected:
-
-```
-HTTP/1.1 400 Bad Request
-```
-
-```json
-{
-  "title": "One or more validation errors occurred.",
-  "status": 400,
-  "errors": {
-    "Days": ["Days must be positive."]
-  }
-}
-```
-
-Same shape for `days=-1` and `days=366`.
-
-![Step 7 — Invalid days rejected](screenshots/07-validation-invalid-days.png)
-
-**What to look for:** the `errors.Days` array contains the specific
-validation message; the validator caps the window at `1..365`.
-
----
-
-### Step 8 — Run all tests
-
-```powershell
-dotnet test src/BunningsSizzlingHotProducts/BunningsSizzlingHotProducts.slnx `
-    --collect:"XPlat Code Coverage" `
-    --settings coverlet.runsettings
-```
-
-Expected (line counts may differ slightly as tests evolve):
-
-```
-Passed!  - Failed:     0, Passed:    21, ... - BunningsSizzlingHotProducts.Domain.Tests.dll
-Passed!  - Failed:     0, Passed:    14, ... - BunningsSizzlingHotProducts.Application.Tests.dll
-Passed!  - Failed:     0, Passed:     7, ... - BunningsSizzlingHotProducts.Api.IntegrationTests.dll
-```
-
-![Step 8 — All tests pass](screenshots/08-tests-pass.png)
-
-**What to look for:** **42 passing tests** across three projects; no
-failures, no skips. The integration test suite stands up its own
-Postgres via Testcontainers; Docker Desktop must be running.
-
----
-
-### Step 9 — Coverage report
-
-```powershell
-reportgenerator `
-    -reports:"./TestResults/**/coverage.cobertura.xml" `
-    -targetdir:"./TestResults/CoverageReport" `
-    -reporttypes:"Html;TextSummary"
-
-start ./TestResults/CoverageReport/index.html
-```
-
-Expected summary (after the runsettings exclusions are applied):
-
-```
-Line coverage:    97.6%
-Branch coverage:  78.5%
-Method coverage:  100%
-```
-
-![Step 9 — Coverage report](screenshots/09-coverage-report.png)
-
-**What to look for:** Domain at **100%**, Application at **100%**,
-Api at **100%**, Infrastructure at **95%**. The 5% gap in Infrastructure
-is the `throw` branches in `DatabaseSeeder` for unreachable error
-conditions (duplicate completed order, orphan cancellation, unknown
-status) — intentionally uncovered.
-
----
-
-## Architecture
-
-Clean-architecture-flavoured layered solution:
+## Architecture at a glance
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
+│  bunnings-sizzling-hot-products-ui  (React + Vite + nginx)       │
+│  - SPA pages: Daily / Rolling                                    │
+│  - NSwag-generated TypeScript client (contract-first)            │
+│  - Production: nginx serves the SPA + proxies /api/* → backend   │
+└────────────────────────┬─────────────────────────────────────────┘
+                         │ HTTP /api/...
+┌────────────────────────▼─────────────────────────────────────────┐
 │  BunningsSizzlingHotProducts.Api   (ASP.NET Core 10 controllers) │
 │  - GET /api/top-product/daily                                    │
 │  - GET /api/top-product/rolling                                  │
@@ -386,7 +124,7 @@ Clean-architecture-flavoured layered solution:
 │  - IOrderRepository / IProductRepository / IClock abstractions   │
 │  - Validators                                                    │
 └────────────────────────┬─────────────────────────────────────────┘
-                         │ depends on
+                         │
 ┌────────────────────────▼─────────────────────────────────────────┐
 │  BunningsSizzlingHotProducts.Domain   (pure C# — no I/O)         │
 │  - Order, OrderEntry, Product, OrderStatus                       │
@@ -402,7 +140,9 @@ Clean-architecture-flavoured layered solution:
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-**The query pipeline.** Both handlers run the same three-stage functional pipeline:
+### The query pipeline
+
+Both handlers run the same three-stage functional pipeline:
 
 ```
 raw orders  ──► OrderReducer ──► ProductSaleCounter ──► TopProductSelector ──► product name
@@ -411,92 +151,297 @@ raw orders  ──► OrderReducer ──► ProductSaleCounter ──► TopPro
                                 tuples)
 ```
 
-Each stage does one named thing on plain `IEnumerable<T>` inputs. The pipeline
-is fully unit-testable without a database (`Domain.Tests`) and is reused
-verbatim by both handlers.
+Each stage does one named thing on plain `IEnumerable<T>` inputs. The pipeline is fully unit-testable without a database (`Domain.Tests`) and is reused verbatim by both handlers.
 
 ---
 
-## Assumptions and trade-offs
+## Quick start
 
-The brief leaves a few edges unspecified or contains friction that needed a
-deliberate call. Each was resolved as follows:
+### Option 1 — Docker Compose (recommended; zero local dependencies beyond Docker)
 
-1. **Cancellation semantics.** A cancellation has the same `OrderId` as a
-   prior completed order, but a later `Date`. The seeder maps both rows
-   into a *single* `OrderRow` (`Status = "cancelled"`,
-   `OriginalOrderDate = <original sale date>`, `Date = <cancellation date>`).
-   The reducer drops the order entirely; the cancellation does not itself
-   count as a sale.
-2. **Counting rule.** A given `(customer, product, day)` tuple counts as
-   **one** sale regardless of quantity or how many orders the customer
-   placed that day — this matches the brief's "unique-customer-sale-per-day"
-   reading. Pure quantity-based counting would have been a different
-   product entirely; this is the interpretation I implemented.
-3. **Tie-break.** When two products share a total, the alphabetically
-   earlier name (ordinal compare) wins. The brief doesn't specify, but
-   determinism matters more than fairness here — graders running on
-   different locales should see the same answer.
-4. **Rolling window anchor.** The window ends at the host's clock's
-   `Today` (`IClock`). For reproducible tests I inject a `FixedClock` in
-   the test projects; production uses `SystemClock`. A future
-   improvement would expose explicit `from` / `to` query params on the
-   rolling endpoint so the answer doesn't drift with calendar time.
-5. **Input handling — important note for graders.** The supplied
-   `inputs/*.json` files contain stray `CRLF` sequences inserted **inside**
-   JSON string literals (a line-wrap artifact of the dataset, not the
-   structure between tokens). Strict JSON does not permit unescaped control
-   characters inside strings, so `System.Text.Json` rejects the files
-   as-supplied.
+```powershell
+git clone https://github.com/vinhngogia0906/VinhNgo_Bunnings_Code_Challenge.git
+cd VinhNgo_Bunnings_Code_Challenge
 
-   Rather than pre-process the inputs (which would silently break if you
-   supply replacement files with the same characteristic), the seeder
-   reads them through `SeedJsonReader`, which:
+docker compose up --build -d
+```
 
-   1. Attempts a strict parse first.
-   2. On a specific `JsonException` ("invalid within a JSON string"),
-      strips stray `\r\n` / `\r` and retries once.
+Wait ~20 seconds for the `backend` container to come up (Postgres has to be `healthy` first, then EF migrations + JSON seeding run on first start), then open:
 
-   **Assumption:** any CR/LF inside a string value is a wrap artifact, not
-   legitimate data — true for this dataset (product names, IDs, dates). If
-   you supply replacement input files where a string value *must* contain
-   a literal newline, escape it as `\n` per RFC 8259 — strict parsing will
-   succeed first and the tolerant fallback will never run. The fallback is
-   guarded by a `when` clause so unrelated JSON errors still surface as
-   themselves.
-6. **Persistence DTOs (`*Row`) are separate from domain types.** EF Core
-   maps to flat row types in `Infrastructure/Persistence/Models/`; the
-   repository assembles domain aggregates by hand. Keeps the domain layer
-   free of `Microsoft.EntityFrameworkCore` references.
-7. **No authentication / rate limiting / multi-tenancy.** Out of scope for
-   the take-home; mentioned here so it's clearly an explicit choice, not
-   an oversight.
-8. **One-shot seeding, no advisory lock.** The seeder is idempotent
-   (`if (await db.Products.AnyAsync(ct)) return;`) but has no inter-replica
-   locking. Running multiple backend replicas against a fresh DB would
-   race. Not a problem in the Compose setup (single replica).
+| Surface          | URL |
+|------------------|-----|
+| **Frontend SPA** | http://localhost/ |
+| **API root**     | http://localhost:8080 |
+| **OpenAPI**      | http://localhost:8080/openapi/v1.json |
 
----
+You should see this in Docker Desktop:
 
-## How I'd extend this
+![Step 0 — Docker containers running](screenshots/00-docker-containers-running.png)
 
-- **Explicit `from`/`to` on the rolling endpoint** — remove the
-  host-clock dependency for fully deterministic responses.
-- **Repository unit tests** — currently covered transitively via the
-  Testcontainers integration suite. A focused EF-in-memory layer would
-  cover edge cases (empty result, paging) more cheaply.
-- **Cancellations as a separate audit table** — instead of mutating the
-  original row. Would give a real change history at the cost of more
-  complex aggregation SQL.
-- **Caching the top-product query** — the answer for a past date never
-  changes. A Redis or in-process LRU cache keyed by date would shave
-  most of the runtime for repeated queries.
-- **OpenTelemetry tracing** — handlers and repositories are perfect
-  spans-of-interest.
+Or this in the terminal:
+
+![Step 0.5 — Terminal output containers running](screenshots/00.5-docker-containers-running.png)
+
+To stop:
+
+```powershell
+docker compose down       # keep the Postgres volume (next run skips reseeding)
+docker compose down -v    # wipe the volume too (next run reseeds from scratch)
+```
+
+### Option 2 — Run locally (faster iteration; needs .NET 10 SDK + Node 24 + Docker for Postgres)
+
+Backend:
+
+```powershell
+docker compose up -d db
+$env:ConnectionStrings__Postgres = "Host=localhost;Port=5432;Database=sizzling;Username=postgres;Password=postgres"
+$env:Seeding__InputsPath          = "$PWD\inputs"
+dotnet run --project src/BunningsSizzlingHotProducts/BunningsSizzlingHotProducts.Api
+```
+
+Frontend (in another terminal):
+
+```powershell
+cd src\bunnings-sizzling-hot-products-ui
+npm ci
+npm run dev   # Vite proxies /api → backend (http://localhost:5182)
+```
+
+Then open http://localhost:5173.
+
+
+### Option 3 — Run all tests
+
+```powershell
+# Backend
+dotnet test src/BunningsSizzlingHotProducts/BunningsSizzlingHotProducts.slnx `
+    --collect:"XPlat Code Coverage" `
+    --settings coverlet.runsettings
+
+# Frontend components (Vitest)
+cd src\bunnings-sizzling-hot-products-ui
+npm test
+
+# Frontend E2E (Playwright, needs the docker stack running)
+npm run e2e
+```
+
+The backend's integration test suite uses [Testcontainers](https://dotnet.testcontainers.org/) to spin up its own ephemeral Postgres. Docker Desktop must be running, but you do not need to start `docker compose up` first — those tests are self-contained.
 
 ---
 
-## Tests
+## What to test (Postman walkthrough)
+
+The fastest way to exercise the API as a reviewer is via Postman. Below are every meaningful test case, the exact request, the expected response, and a screenshot of the verified result.
+
+> All test cases assume **Option 1 (Docker Compose)** is running — API at `http://localhost:8080`.
+
+### How to run
+
+Create a new **GET** request in Postman for each test below. Method is always GET; no body, no headers, no auth. Paste the URL and click **Send**.
+
+### Test 1 — Daily, the basket wins on `2026-04-21`
+
+| | |
+|---|---|
+| **URL** | `http://localhost:8080/api/top-product/daily?date=2026-04-21` |
+| **Status** | `200 OK` |
+
+Expected body:
+
+```json
+{
+  "from": "2026-04-21",
+  "to": "2026-04-21",
+  "productName": "Ezy Storage 37L Flexi Laundry Basket - White"
+}
+```
+
+![Postman — daily 2026-04-21](screenshots/postman-daily-2026-04-21.png)
+
+**What it proves:** the laundry basket (`P1`) is bought by C1, C2, and C3 on 21/04 — three unique-customer sales — beating the letterbox (`P2`), which would have three too if not for a cancellation (see Test 3).
+
+---
+
+### Test 2 — Daily, tie-break case on `2026-04-23`
+
+| | |
+|---|---|
+| **URL** | `http://localhost:8080/api/top-product/daily?date=2026-04-23` |
+| **Status** | `200 OK` |
+
+Expected body:
+
+```json
+{
+  "from": "2026-04-23",
+  "to": "2026-04-23",
+  "productName": "Arlec 160W Crystalline Solar Foldable Charging Kit"
+}
+```
+
+![Postman — daily 2026-04-23](screenshots/postman-daily-2026-04-23-tiebreak.png)
+
+**What it proves:** the laundry basket (`P1`) and the solar charging kit (`P6`) each have one unique-customer sale on 23/04 — a tie. The selector breaks it with ordinal alphabetical order: `"Arlec…"` < `"Ezy…"`, so Arlec wins. Deterministic across machines and locales ([design choice #3](#3-tie-break--alphabetical-ordinal)).
+
+---
+
+### Test 3 — Cancellation netting (implicit in Test 1)
+
+The seed data contains a cancellation: `O30` was placed on 21/04 for the letterbox (`P2`), then cancelled on 22/04. The system must net it out from the 21/04 totals.
+
+This is implicit in **Test 1**. Without cancellation handling, `P2` would have three unique-customer sales on 21/04 (C2, C3, C32), tying with `P1` — and ordinal sort would put `"Aandleford…"` (P2) ahead of `"Ezy…"` (P1), flipping the winner. The test passes → cancellation netting is working.
+
+To inspect the netted state directly, query the Postgres container. The EF Core schema uses PascalCase identifiers, so the column names have to be **double-quoted** in SQL — otherwise Postgres folds them to lowercase and rejects the query. Pipe the query via stdin so PowerShell doesn't strip the double quotes on the way through (a known PowerShell quirk when forwarding double quotes to native executables):
+
+```powershell
+@'
+select "OrderId", "Status", "Date", "OriginalOrderDate" from orders where "OrderId" = 'O30';
+'@ | docker compose exec -T db psql -U postgres -d sizzling
+```
+
+Expected: **one row** — `O30 | cancelled | 2026-04-22 | 2026-04-21` ([design choice #1](#1-cancellation-semantics--mutate-dont-duplicate)).
+
+> On bash / zsh you can use the more conventional inline form:
+> ```bash
+> docker compose exec -T db psql -U postgres -d sizzling -c \
+>   'select "OrderId", "Status", "Date", "OriginalOrderDate" from orders where "OrderId" = '"'"'O30'"'"';'
+> ```
+
+![Powershell — cancellation netting psql](screenshots/powershell-cancellation-netting-psql.png)
+
+---
+
+### Test 4 — Rolling, the past year
+
+| | |
+|---|---|
+| **URL** | `http://localhost:8080/api/top-product/rolling?days=365` |
+| **Status** | `200 OK` |
+
+Expected body:
+
+```json
+{
+  "from": "2025-04-24",
+  "to":   "2026-04-23",
+  "productName": "Ezy Storage 37L Flexi Laundry Basket - White"
+}
+```
+
+![Postman — rolling 365](screenshots/postman-rolling-365.png)
+
+**What it proves:** aggregating across the entire seed range (21/04–23/04), the laundry basket sums to **6** unique-customer sales — more than every other product combined. It wins the year. The `from`/`to` are anchored to `IClock.Today = 2026-04-23` per the brief ([design choice #8](#8-rolling-window-anchored-to-a-clock-abstraction)).
+
+---
+
+### Test 5 — Validation: future date → 400
+
+| | |
+|---|---|
+| **URL** | `http://localhost:8080/api/top-product/daily?date=2099-01-01` |
+| **Status** | `400 Bad Request` |
+| **Content-Type** | `application/problem+json` |
+
+Expected body:
+
+```json
+{
+  "type": "https://tools.ietf.org/html/rfc9110#section-15.5.1",
+  "title": "One or more validation errors occurred.",
+  "status": 400,
+  "errors": {
+    "Date": ["Date cannot be in the future."]
+  }
+}
+```
+
+![Postman — future date 400](screenshots/postman-validation-future-date-400.png)
+
+**What it proves:** FluentValidation rejects the request at the controller edge. The response is a standards-compliant RFC 7807 `ProblemDetails`; the specific rule message ("Date cannot be in the future.") sits in `errors.Date[0]`.
+
+---
+
+### Test 6 — Validation: zero days → 400
+
+| | |
+|---|---|
+| **URL** | `http://localhost:8080/api/top-product/rolling?days=0` |
+| **Status** | `400 Bad Request` |
+
+Expected body:
+
+```json
+{
+  "title": "One or more validation errors occurred.",
+  "status": 400,
+  "errors": {
+    "Days": ["Days must be positive."]
+  }
+}
+```
+
+Same shape for `days=-1` (out of range below) and `days=366` (out of range above — the validator caps at 365).
+
+![Postman — zero days 400](screenshots/postman-validation-zero-days-400.png)
+
+**What it proves:** the rolling validator enforces `1 ≤ days ≤ 365` and surfaces the failing rule by field name.
+
+---
+
+### Test cases at a glance
+
+| # | URL | Expected |
+|---|---|---|
+| 1 | `GET /api/top-product/daily?date=2026-04-21`  | 200 — Ezy Storage 37L Flexi Laundry Basket - White |
+| 2 | `GET /api/top-product/daily?date=2026-04-23`  | 200 — Arlec 160W Crystalline Solar Foldable Charging Kit |
+| 3 | (implicit in Test 1; verify via psql)         | one row: `O30, cancelled, 2026-04-22, 2026-04-21` |
+| 4 | `GET /api/top-product/rolling?days=365`       | 200 — Ezy Storage 37L Flexi Laundry Basket - White |
+| 5 | `GET /api/top-product/daily?date=2099-01-01`  | 400 — `errors.Date[0]` |
+| 6 | `GET /api/top-product/rolling?days=0`         | 400 — `errors.Days[0]` |
+
+---
+
+## Frontend UI walkthrough
+
+The same two endpoints, rendered through a small React + Vite SPA served by nginx (via the docker compose stack). Open http://localhost/ once `docker compose up` is healthy.
+
+### Daily — `2026-04-23`
+
+The page mounts with `2026-04-23` pre-filled (the brief's worked example), fetches `/api/top-product/daily?date=2026-04-23` through the nginx proxy, and renders the result in a hot-orange-bordered card.
+
+![Frontend — daily desktop view](screenshots/ui-daily-desktop.png)
+
+**Design notes worth pointing out:**
+
+- The result card's hot-orange left rule and meta line are reserved **exclusively** for the result reveal — the one thing the eye lands on.
+- The yellow safety-stripe rule under the header is a subtle hardware-retail signal without literally cloning the Bunnings brand ([design choice #9](#9-tradesmans-notebook-frontend-aesthetic)).
+- Typography: **Fraunces** for the display heading, **Familjen Grotesk** for body, **JetBrains Mono** for all tabular/utility data — the eyebrow label, the date input, the meta line on the result.
+
+### Rolling — `days=3`
+
+Navigate to **Rolling** from the top-right nav.
+
+![Frontend — rolling desktop view](screenshots/ui-rolling-desktop.png)
+
+The window shows `21 APR 2026 → 23 APR 2026` — the rolling 3-day window anchored to the fixed clock's "today" (2026-04-23 per the brief).
+
+### Mobile / narrow viewport
+
+The layout reflows for ≤600px viewports — the topbar stacks brand above nav, the form input stretches, the result card keeps its orange rule:
+
+| Daily on mobile | Rolling on mobile |
+|---|---|
+| ![Daily mobile](screenshots/daily-mobile.png) | ![Rolling mobile](screenshots/rolling-mobile.png) |
+
+---
+
+## Tests + coverage
+
+Backend has three .NET test projects; frontend has Vitest component tests + Playwright E2E. All run in CI on every push.
+
+### Backend (.NET)
 
 ```powershell
 dotnet test src/BunningsSizzlingHotProducts/BunningsSizzlingHotProducts.slnx `
@@ -506,11 +451,24 @@ dotnet test src/BunningsSizzlingHotProducts/BunningsSizzlingHotProducts.slnx `
 
 | Project | What it covers |
 |---------|----------------|
-| `BunningsSizzlingHotProducts.Domain.Tests`      | The three pipeline stages (`OrderReducer`, `ProductSaleCounter`, `TopProductSelector`) — happy paths, empty inputs, tie-break, cancellation netting, multi-day aggregation. Plus a full spec-replay acceptance test. |
-| `BunningsSizzlingHotProducts.Application.Tests` | Handler orchestration (`GetDailyTopProductHandler`, `GetRollingTopProductHandler`) with `Moq`-based fakes for the repositories; validators via `FluentValidation.TestHelper`. |
+| `BunningsSizzlingHotProducts.Domain.Tests`         | The three pipeline stages — happy paths, empty inputs, tie-break, cancellation netting, multi-day aggregation, plus a spec-replay acceptance test. |
+| `BunningsSizzlingHotProducts.Application.Tests`    | Handler orchestration with `Moq`-based fakes for repositories; validators via `FluentValidation.TestHelper`. |
 | `BunningsSizzlingHotProducts.Api.IntegrationTests` | Full HTTP round-trip via `WebApplicationFactory` against a Testcontainers Postgres. Covers happy paths plus all four validation-failure 400 paths. |
 
-**Coverage targets after the `coverlet.runsettings` exclusions:**
+### Frontend
+
+```powershell
+cd src\bunnings-sizzling-hot-products-ui
+npm test          # Vitest component tests
+npm run e2e       # Playwright E2E
+```
+
+| Suite                        | What it covers |
+|------------------------------|----------------|
+| `src/pages/tests/*.test.tsx` | Component tests for both pages — initial render, refetch on input change, error rendering for both `Error` and `ProblemDetails`-shaped rejections, validation bounds. |
+| `playwright-tests/*.spec.ts` | E2E against the live docker stack — both pages render the seeded top product end-to-end through nginx → backend → Postgres. |
+
+### Coverage targets (after the `coverlet.runsettings` exclusions)
 
 | Project        | Line  | Method | Branch |
 |----------------|-------|--------|--------|
@@ -520,28 +478,34 @@ dotnet test src/BunningsSizzlingHotProducts/BunningsSizzlingHotProducts.slnx `
 | Infrastructure | 95%   | 100%   | high   |
 | **Total**      | **97.6%** | **100%** | **78.5%** |
 
-The 5% gap in Infrastructure is the `throw` branches in `DatabaseSeeder` for
-intentionally-defensive guards (unknown status, duplicate completed order,
-orphan cancellation). They're never hit on the supplied dataset.
+![Coverage report HTML summary](screenshots/coverage-summary.png)
+
+The 5% gap in Infrastructure is the `throw` branches in `DatabaseSeeder` for intentionally-defensive guards (unknown status, duplicate completed order, orphan cancellation). They're never hit on the supplied dataset.
+
+To regenerate the HTML report locally:
+
+```powershell
+dotnet tool install -g dotnet-reportgenerator-globaltool   # once
+reportgenerator `
+    -reports:"./TestResults/**/coverage.cobertura.xml" `
+    -targetdir:"./TestResults/CoverageReport" `
+    -reporttypes:"Html;TextSummary"
+start ./TestResults/CoverageReport/index.html
+```
 
 ---
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push to `main` and every pull
-request:
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request.
 
-| Step                         | What it does |
-|------------------------------|--------------|
-| `Restore` / `Build`          | `dotnet restore` + `dotnet build` in Release |
-| `Test`                       | `dotnet test --collect:"XPlat Code Coverage" --settings ../../coverlet.runsettings` |
-| `Generate coverage report`   | ReportGenerator → HtmlInline + MarkdownSummaryGithub + Cobertura |
-| `Add coverage to job summary`| Appends the markdown summary to `$GITHUB_STEP_SUMMARY` so coverage renders inline on the run page |
-| `Upload test results`        | `.trx` files as a workflow artifact |
-| `Upload code coverage`       | HTML report as a workflow artifact |
+| Job             | What it does |
+|-----------------|--------------|
+| `backend`       | `dotnet restore` → build (Release) → test with coverage + runsettings exclusions → ReportGenerator → coverage summary appended to the workflow run page → upload `.trx` + HTML report as artifacts |
+| `frontend-unit` | `npm ci` → `npm test` (Vitest) → `npm run build` (production sanity build) |
+| `frontend-e2e`  | depends on the two above passing; brings up the full docker compose stack, polls for readiness, runs Playwright against `http://localhost`, uploads the Playwright HTML report on failure |
 
-A failing test fails the build. The CI does **not** currently enforce a
-coverage threshold — coverage is reported, not gated.
+A failing test fails the build. CI does **not** currently enforce a coverage threshold — coverage is reported, not gated.
 
 ---
 
@@ -550,52 +514,75 @@ coverage threshold — coverage is reported, not gated.
 ```
 .
 ├── docker-compose.yml
-├── coverlet.runsettings                          ← coverage exclusions (migrations, OpenAPI gen, Program.cs)
+├── coverlet.runsettings                          ← coverage exclusions
 ├── inputs/                                       ← challenge-supplied dataset
 │   ├── orders.json
 │   └── products.json
+├── screenshots/                                  ← documentation images
 ├── src/
-│   └── BunningsSizzlingHotProducts/
-│       ├── BunningsSizzlingHotProducts.slnx
-│       ├── BunningsSizzlingHotProducts.Api/
-│       │   ├── Controllers/TopProductController.cs
-│       │   ├── Program.cs
-│       │   └── Dockerfile
-│       ├── BunningsSizzlingHotProducts.Application/
-│       │   ├── Handlers/
-│       │   ├── Queries/
-│       │   ├── Validators/
-│       │   └── Abstractions/
-│       ├── BunningsSizzlingHotProducts.Domain/
-│       │   ├── Entities/
-│       │   └── SalesAggregation/
-│       ├── BunningsSizzlingHotProducts.Infrastructure/
-│       │   ├── Persistence/
-│       │   ├── Repositories/
-│       │   └── Seeding/
-│       └── tests/
-│           ├── BunningsSizzlingHotProducts.Domain.Tests/
-│           ├── BunningsSizzlingHotProducts.Application.Tests/
-│           └── BunningsSizzlingHotProducts.Api.IntegrationTests/
-├── screenshots/                                  ← step-by-step verification images
+│   ├── BunningsSizzlingHotProducts/              ← .NET solution
+│   │   ├── BunningsSizzlingHotProducts.slnx
+│   │   ├── BunningsSizzlingHotProducts.Api/
+│   │   ├── BunningsSizzlingHotProducts.Application/
+│   │   ├── BunningsSizzlingHotProducts.Domain/
+│   │   ├── BunningsSizzlingHotProducts.Infrastructure/
+│   │   └── tests/
+│   └── bunnings-sizzling-hot-products-ui/        ← React + Vite SPA
+│       ├── src/
+│       ├── playwright-tests/
+│       ├── Dockerfile                            ← multi-stage: node 24 build → nginx serve
+│       ├── nginx.conf                            ← SPA fallback + /api proxy → backend
+│       └── playwright.config.ts
 └── .github/workflows/ci.yml
 ```
+
+---
+
+## If I had more time
+
+Concrete next moves I'd make if this were a real project rather than a take-home:
+
+### Backend
+
+- **Explicit `from` / `to` query params on the rolling endpoint.** Removes the host-clock dependency and lets E2E tests verify dates without injecting a fake clock.
+- **Cancellations as a separate audit table.** Adds a real change history at the cost of a more complex aggregation query. Useful once "when was this order cancelled?" becomes a real question.
+- **OpenTelemetry tracing** on handlers + repositories. Both are perfect spans-of-interest, especially the database calls.
+- **A focused repository unit-test layer** using EF Core in-memory. Currently covered transitively via Testcontainers integration tests; cheaper unit tests would speed the inner dev loop.
+- **A coverage gate in CI** (`--threshold 80`) to prevent silent regressions.
+- **Caching for past-date queries.** The answer for `daily?date=2026-04-21` never changes once the data settles — a Redis cache keyed by date would amortise most of the runtime for repeated reads.
+
+### Frontend
+
+- **Suspense + ErrorBoundary** instead of the current effect-based loading/error state. Less ceremony, automatic skeleton fallback during the fetch.
+- **TanStack Query** for caching, retries, request deduplication. One more dependency in exchange for a much smaller `useEffect` surface.
+- **A "compare two days" view** that calls `daily` twice and shows the delta. Useful for buyers tracking week-over-week trends.
+- **Visual regression tests** via Playwright snapshots. The styling is distinctive enough that drift would be a real concern.
+- **An end-to-end test for the `ProblemDetails` error path.** Currently only unit-tested via mocks.
+
+### Cross-cutting
+
+- **End-to-end traces from frontend → API → DB**, propagated through W3C trace-context headers.
+- **A real auth story.** Bunnings staff vs. customer-facing surfaces almost certainly want different permission boundaries.
+- **Multi-tenant partitioning** if this ever needs to serve multiple stores.
+- **Dependabot / Renovate** wired up for both the .NET and npm dependency graphs.
 
 ---
 
 ## Submission checklist
 
 - [x] Both required operations implemented and unit-tested.
-- [x] Spec's worked example replays exactly through the API (Steps 2–5).
-- [x] Cancellation-netting semantics handled and verified (Step 4).
-- [x] Tie-break is deterministic and reproducible across locales (Step 3).
-- [x] Input file quirk surfaced, documented, and handled narrowly.
-- [x] FluentValidation at the API boundary, ProblemDetails responses.
-- [x] Docker Compose for one-command launch.
+- [x] Spec's worked example replays exactly through the API (Tests 1–4).
+- [x] Cancellation-netting semantics handled and verified (Test 3).
+- [x] Tie-break is deterministic and reproducible across locales (Test 2).
+- [x] Input file quirk surfaced, documented, and handled narrowly ([design choice #4](#4-tolerant-json-seeding--narrow-guarded-fallback)).
+- [x] FluentValidation at the API boundary, RFC 7807 ProblemDetails responses (Tests 5, 6).
+- [x] Docker Compose for one-command launch — backend, frontend, and Postgres in one shot.
 - [x] Testcontainers-backed integration tests — no shared DB state.
+- [x] React + Vite SPA consumes the API contract-first (NSwag-generated client).
+- [x] Playwright E2E tests against the live docker stack.
 - [x] GitHub Actions CI green; coverage report uploaded per run.
 - [x] 97.6% line coverage after exclusions; 100% on Domain / Application / API.
-- [x] README walks the grader through every endpoint with expected outputs.
+- [x] README walks the grader through every endpoint with expected outputs, design rationale, and a UI tour.
 
 ---
 
