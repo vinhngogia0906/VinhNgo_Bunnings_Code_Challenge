@@ -1,0 +1,2 @@
+// Have to put another setup test in here so that the component tests can use the custom matchers from jest-dom. Vitest doesn't seem to be picking up the vitest.setup.ts file for some reason, even though it's specified in the vitest config.
+import '@testing-library/jest-dom/vitest'
