@@ -1,0 +1,16 @@
+node_modules
+dist
+build
+.vite
+coverage
+playwright-report
+test-results
+.git
+.vscode
+.env
+.env.local
+.env.*.local
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db

@@ -25,11 +25,13 @@ export default defineConfig({
   reporter: 'html',
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
-    /* Base URL to use in actions like `await page.goto('')`. */
-    // baseURL: 'http://localhost:3000',
-
-    /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
-    baseURL: 'http://localhost:5173',
+    /*
+     * Base URL precedence:
+     *   1. PLAYWRIGHT_BASE_URL env var — used in CI when the docker compose
+     *      stack is already up on port 80 via nginx.
+     *   2. http://localhost:5173 — Vite dev server (default for local dev).
+     */
+    baseURL: process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:5173',
     trace: 'on-first-retry',
   },
 
@@ -71,13 +73,18 @@ export default defineConfig({
     // },
   ],
 
-  /* Run your local dev server before starting the tests */
-  webServer: [
-    {
-      command: 'npm run dev',
-      url: 'http://localhost:5173',
-      reuseExistingServer: !process.env.CI,
-      timeout: 60_000,
-    },
-  ],
+  /*
+   * Run the Vite dev server before tests — unless PLAYWRIGHT_BASE_URL is set,
+   * in which case we assume the caller (CI) has already brought up the stack.
+   */
+  webServer: process.env.PLAYWRIGHT_BASE_URL
+    ? undefined
+    : [
+        {
+          command: 'npm run dev',
+          url: 'http://localhost:5173',
+          reuseExistingServer: !process.env.CI,
+          timeout: 60_000,
+        },
+      ],
 });
